@@ -112,7 +112,8 @@ html, body {
 .submit-status { font-size: .75rem; color: var(--green); min-height: 16px; margin-bottom: 8px; font-weight: 600; }
 
 /* ── GAME ── */
-#game { display: none; flex-direction: column; width: 100%; height: 100%; overflow: hidden; }
+/* position:fixed means the soft keyboard / viewport changes CANNOT affect layout */
+#game { position: fixed; inset: 0; display: none; flex-direction: column; width: 100%; height: 100%; overflow: hidden; }
 .header { display: flex; align-items: center; justify-content: space-between;
   padding: 10px 16px 8px; background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0; }
 .hlogo { font-family: 'DM Serif Display', serif; font-size: 1.25rem; color: var(--text);
@@ -160,11 +161,9 @@ html, body {
 .tnum { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   font-size: .65rem; font-weight: 700; color: var(--text); }
 
-/* Canvas area — FIXED SIZE, no flex shrinking weirdness */
+/* Canvas area — fixed, never shifts */
 .canvas-wrap {
   flex: 1; position: relative; background: #fff; overflow: hidden; min-height: 0;
-  /* Prevent layout-induced resizing from soft keyboard */
-  contain: strict;
 }
 canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; cursor: crosshair; touch-action: none; display: block; }
 
@@ -462,106 +461,115 @@ let lastState = null;
 let currentPhase = 'lobby';
 
 // ── Canvas ───────────────────────────────────────────────────────────
+// LOGICAL canvas: fixed 800×600 — source of truth for all drawing.
+// All coordinates (local + network) live in logical space.
+// The display canvas just scales the offscreen image to fit the wrapper.
+const LW = 800, LH = 600;
+
+const offscreen = document.createElement('canvas');
+offscreen.width = LW; offscreen.height = LH;
+const offCtx = offscreen.getContext('2d');
+offCtx.fillStyle = '#fff';
+offCtx.fillRect(0, 0, LW, LH);
+
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 const DPR = window.devicePixelRatio || 1;
 
-// Debounced resize to prevent constant resize calls (e.g. soft keyboard)
+// Copy offscreen → display canvas. Called after every draw op and on resize.
+function render() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.drawImage(offscreen, 0, 0, LW, LH, 0, 0, canvas.width, canvas.height);
+}
+
+// Resize just updates display canvas size, then re-renders — zero data loss.
 let resizeTimer = null;
 function scheduleResize() {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(resizeCanvas, 80);
+  resizeTimer = setTimeout(resizeCanvas, 60);
 }
 
 function resizeCanvas() {
-  const wrap = canvas.parentElement;
+  const wrap = document.getElementById('canvasWrap');
   const w = Math.floor(wrap.clientWidth);
   const h = Math.floor(wrap.clientHeight);
-  if (w < 1 || h < 1) return;
-
-  const newW = w * DPR, newH = h * DPR;
-  // If nothing changed, skip
-  if (canvas.width === newW && canvas.height === newH) return;
-
-  // Preserve current drawing using drawImage (scales correctly)
-  const tmp = document.createElement('canvas');
-  tmp.width = canvas.width; tmp.height = canvas.height;
-  const tc = tmp.getContext('2d');
-  tc.drawImage(canvas, 0, 0);
-
-  // Resize canvas (resets context state)
-  canvas.width = newW; canvas.height = newH;
+  if (w < 2 || h < 2) return;
+  const nw = Math.round(w * DPR), nh = Math.round(h * DPR);
+  if (canvas.width === nw && canvas.height === nh) return; // nothing changed
+  canvas.width = nw; canvas.height = nh;
   canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
-  // Reset transform then apply DPR scale
-  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
-
-  // Restore drawing, scaled to new size
-  if (tmp.width > 1 && tmp.height > 1) {
-    ctx.save();
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.drawImage(tmp, 0, 0, tmp.width, tmp.height, 0, 0, newW, newH);
-    ctx.restore();
-    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  }
+  render(); // paint offscreen content at new size — no data lost
 }
 
+// Returns touch/mouse position mapped to LOGICAL (0→LW, 0→LH) space.
 function getPos(e) {
   const r = canvas.getBoundingClientRect();
   const s = e.touches ? e.touches[0] : e;
-  return { x: s.clientX - r.left, y: s.clientY - r.top };
+  return {
+    x: (s.clientX - r.left) / r.width  * LW,
+    y: (s.clientY - r.top)  / r.height * LH
+  };
 }
 
+// Draw a stroke segment on the OFFSCREEN canvas.
 function stroke(p, start) {
   if (G.tool === 'fill') return;
   const c = G.tool === 'eraser' ? '#fff' : G.color;
   if (start) {
-    ctx.beginPath(); ctx.arc(p.x, p.y, G.size / 2, 0, Math.PI * 2);
-    ctx.fillStyle = c; ctx.fill();
+    offCtx.beginPath(); offCtx.arc(p.x, p.y, G.size / 2, 0, Math.PI * 2);
+    offCtx.fillStyle = c; offCtx.fill();
   } else {
-    ctx.beginPath(); ctx.moveTo(G.lx, G.ly); ctx.lineTo(p.x, p.y);
-    ctx.strokeStyle = c; ctx.lineWidth = G.size;
-    ctx.lineCap = ctx.lineJoin = 'round'; ctx.stroke();
+    offCtx.beginPath(); offCtx.moveTo(G.lx, G.ly); offCtx.lineTo(p.x, p.y);
+    offCtx.strokeStyle = c; offCtx.lineWidth = G.size;
+    offCtx.lineCap = offCtx.lineJoin = 'round'; offCtx.stroke();
   }
   G.lx = p.x; G.ly = p.y;
+  render();
 }
 
+// Replay a draw event received from the server (coords already in logical space).
 function replayDraw(d) {
   if (d.type === 'start') {
-    ctx.beginPath(); ctx.arc(d.x, d.y, d.size / 2, 0, Math.PI * 2);
-    ctx.fillStyle = d.color; ctx.fill();
+    offCtx.beginPath(); offCtx.arc(d.x, d.y, d.size / 2, 0, Math.PI * 2);
+    offCtx.fillStyle = d.color; offCtx.fill();
   } else {
-    ctx.beginPath(); ctx.moveTo(d.lx, d.ly); ctx.lineTo(d.x, d.y);
-    ctx.strokeStyle = d.color; ctx.lineWidth = d.size;
-    ctx.lineCap = ctx.lineJoin = 'round'; ctx.stroke();
+    offCtx.beginPath(); offCtx.moveTo(d.lx, d.ly); offCtx.lineTo(d.x, d.y);
+    offCtx.strokeStyle = d.color; offCtx.lineWidth = d.size;
+    offCtx.lineCap = offCtx.lineJoin = 'round'; offCtx.stroke();
   }
+  render();
 }
 
 function hexRgb(h) { return [parseInt(h.slice(1,3),16),parseInt(h.slice(3,5),16),parseInt(h.slice(5,7),16),255]; }
 function colorMatch(a, b, t = 30) { return Math.abs(a[0]-b[0])+Math.abs(a[1]-b[1])+Math.abs(a[2]-b[2])+Math.abs(a[3]-b[3]) < t; }
 
+// Flood fill on the OFFSCREEN canvas (logical coords).
 function flood(sx, sy) {
-  sx = Math.max(0, Math.min(canvas.width-1, Math.round(sx * DPR)));
-  sy = Math.max(0, Math.min(canvas.height-1, Math.round(sy * DPR)));
-  const w = canvas.width, h = canvas.height, d = ctx.getImageData(0, 0, w, h), px = d.data;
-  const I = (x, y) => (y * w + x) * 4;
+  sx = Math.max(0, Math.min(LW - 1, Math.round(sx)));
+  sy = Math.max(0, Math.min(LH - 1, Math.round(sy)));
+  const imgd = offCtx.getImageData(0, 0, LW, LH), px = imgd.data;
+  const I = (x, y) => (y * LW + x) * 4;
   const tgt = [px[I(sx,sy)], px[I(sx,sy)+1], px[I(sx,sy)+2], px[I(sx,sy)+3]];
   const fill = hexRgb(G.color);
   if (colorMatch(tgt, fill, 5)) return;
-  const stack = [[sx, sy]], vis = new Uint8Array(w * h);
+  const stack = [[sx, sy]], vis = new Uint8Array(LW * LH);
   while (stack.length) {
     const [x, y] = stack.pop();
-    if (x < 0 || x >= w || y < 0 || y >= h || vis[y*w+x]) continue;
+    if (x < 0 || x >= LW || y < 0 || y >= LH || vis[y * LW + x]) continue;
     const i = I(x, y);
     if (!colorMatch([px[i], px[i+1], px[i+2], px[i+3]], tgt)) continue;
-    vis[y*w+x] = 1; px[i] = fill[0]; px[i+1] = fill[1]; px[i+2] = fill[2]; px[i+3] = fill[3];
+    vis[y * LW + x] = 1;
+    px[i] = fill[0]; px[i+1] = fill[1]; px[i+2] = fill[2]; px[i+3] = fill[3];
     stack.push([x+1,y],[x-1,y],[x,y+1],[x,y-1]);
   }
-  ctx.putImageData(d, 0, 0);
+  offCtx.putImageData(imgd, 0, 0);
+  render();
 }
 
 function clearCanvas(emit) {
-  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width / DPR, canvas.height / DPR);
+  offCtx.fillStyle = '#fff';
+  offCtx.fillRect(0, 0, LW, LH);
+  render();
   if (emit && socket) socket.emit('clearCanvas');
 }
 
@@ -569,7 +577,8 @@ function onDrawStart(p) {
   if (!amDrawer) return;
   if (G.tool === 'fill') {
     flood(p.x, p.y);
-    socket?.emit('draw', { type: 'fill', x: p.x/(canvas.width/DPR), y: p.y/(canvas.height/DPR), color: G.color });
+    // Send logical coords — same for everyone
+    socket?.emit('draw', { type: 'fill', x: p.x, y: p.y, color: G.color });
     return;
   }
   G.drawing = true; stroke(p, true);
@@ -880,10 +889,11 @@ function goWaiting(roomId) {
 function goGame() {
   document.getElementById('lobby').classList.add('hidden');
   document.getElementById('waiting').classList.add('hidden');
-  document.getElementById('game').style.display = 'flex';
+  const game = document.getElementById('game');
+  game.style.display = 'flex';
   document.getElementById('roomPill').textContent = myRoomId || '——';
-  // Resize canvas after layout is ready
-  requestAnimationFrame(() => resizeCanvas());
+  // Two RAF calls ensure the flex layout has fully resolved before we measure
+  requestAnimationFrame(() => requestAnimationFrame(() => resizeCanvas()));
   requestFullscreen();
 }
 
@@ -1028,8 +1038,9 @@ function connect(cb) {
 
   socket.on('draw', d => {
     if (d.type === 'fill') {
+      // x,y are already in logical space (0→LW, 0→LH)
       const ox = G.color; G.color = d.color;
-      flood(d.x * (canvas.width / DPR), d.y * (canvas.height / DPR));
+      flood(d.x, d.y);
       G.color = ox;
     } else {
       replayDraw(d);
@@ -1227,9 +1238,20 @@ window.addEventListener('popstate', () => {
 });
 
 // ── Init ──────────────────────────────────────────────────────────────
-// ResizeObserver with debounce to prevent constant resizing
-const ro = new ResizeObserver(scheduleResize);
-ro.observe(document.getElementById('canvasWrap'));
+// Use window resize + orientation change for canvas resizing.
+// We deliberately do NOT use ResizeObserver on canvasWrap, because on mobile
+// the soft keyboard triggers it constantly, causing the canvas to flicker/shift.
+// With the offscreen canvas approach, resize is now safe (zero data loss) but
+// we still limit it to real device-level changes only.
+window.addEventListener('resize', () => {
+  // Only resize if we're actually in-game
+  if (document.getElementById('game').style.display !== 'none') {
+    scheduleResize();
+  }
+});
+window.addEventListener('orientationchange', () => {
+  setTimeout(resizeCanvas, 200);
+});
 
 initToolbar();
 resizeCanvas();
