@@ -3,6 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#111113">
 <title>Scribble</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Serif+Display&display=swap" rel="stylesheet">
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
@@ -567,6 +571,19 @@ function goGame() {
   document.getElementById('game').style.display='flex';
   document.getElementById('roomPill').textContent=myRoomId;
   resizeCanvas();
+  requestFullscreen();
+}
+
+function requestFullscreen() {
+  const el = document.documentElement;
+  const req = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen || el.msRequestFullscreen;
+  if (req) req.call(el).catch(() => {});
+  // Lock orientation to portrait on mobile if supported
+  if (screen.orientation && screen.orientation.lock) {
+    screen.orientation.lock('portrait').catch(() => {});
+  }
+  // Push history state so back button doesn't navigate away
+  history.pushState({ inGame: true }, '');
 }
 
 function renderWaiting(state) {
@@ -805,6 +822,9 @@ document.getElementById('startBtn').onclick = () => {
 
 document.getElementById('leaveBtn').onclick = () => {
   socket?.disconnect(); socket = null;
+  // Exit fullscreen when leaving
+  const exit = document.exitFullscreen || document.webkitExitFullscreen || document.mozCancelFullScreen || document.msExitFullscreen;
+  if (exit && document.fullscreenElement) exit.call(document).catch(() => {});
   goLobby();
 };
 
@@ -817,6 +837,15 @@ function sendMsg() {
   if (!v || !socket) return;
   socket.emit('guess', { text: v });
 }
+
+// Intercept browser back button during game to prevent accidental disconnect
+window.addEventListener('popstate', (e) => {
+  const gameVisible = document.getElementById('game').style.display !== 'none';
+  if (gameVisible) {
+    // Push state again to keep them in game
+    history.pushState({ inGame: true }, '');
+  }
+});
 
 // Init
 new ResizeObserver(resizeCanvas).observe(canvas.parentElement);
