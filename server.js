@@ -24,11 +24,14 @@ app.get('/health', (req, res) => res.json({ ok: true, rooms: Object.keys(rooms).
 
 const rooms = {};
 
-const WORDS = [
-  'cat','dog','sun','car','tree','fish','bird','hat','ball','star','bee','bus','cup','egg','fan','frog','ice','jet','key','map','owl','paw','pig','saw','sea','sky','van','web','zip','zoo',
-  'guitar','castle','rocket','dragon','bridge','umbrella','elephant','laptop','cactus','pirate','wizard','trophy','camera','ribbon','tunnel','blanket','puzzle','candle','orange','penguin','lantern','balloon','anchor','bottle','button','carpet','cookie','donkey','forest','garden','hammer','island','jigsaw','jungle','magnet','mirror','monkey','museum','needle','noodle','parrot','pencil','pepper','pickle','planet','pocket','potato','rabbit','saddle','sandal','shovel','spider','sponge','spring','square','statue','stream','sunset','switch','teapot','temple','thread','ticket','tomato','turtle','violin','wallet','walrus','window','zipper',
-  'constellation','architecture','thermometer','encyclopedia','kaleidoscope','catastrophe','extraordinary','revolutionary','autobiography','photosynthesis','refrigerator','rollercoaster','sophisticated','thunderstorm','xylophone'
-];
+// Load words from words.txt, fallback to built-in list
+let WORDS = ['cat','dog','sun','car','tree','fish','bird','hat','ball','star','guitar','castle','rocket','dragon','bridge','umbrella','elephant','laptop','cactus','pirate','wizard','trophy','camera','ribbon','tunnel','blanket','puzzle','candle','orange','penguin','constellation','architecture','thermometer','encyclopedia','kaleidoscope','photosynthesis','refrigerator','sophisticated'];
+try {
+  const fs = require('fs');
+  const raw = fs.readFileSync(path.join(__dirname, 'words.txt'), 'utf8');
+  const loaded = raw.split('\n').map(w => w.trim()).filter(Boolean);
+  if (loaded.length > 10) { WORDS = loaded; console.log(`Loaded ${WORDS.length} words from words.txt`); }
+} catch(e) { console.log('words.txt not found, using built-in words'); }
 
 const AVATARS = ['🦊','🐸','🦁','🐼','🦄','🐬','🦋','🐢','🦉','🐙','🦀','🐧'];
 const AVATAR_BG = ['#151e30','#0c2118','#221a09','#1a0c1a','#0d1a2d','#0c1a1a','#1a1500','#0a1a0a','#1a0a0a','#0a0a1a','#1a1010','#101a1a'];
