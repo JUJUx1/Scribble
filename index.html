@@ -817,13 +817,11 @@ document.getElementById('randomBtn').onclick = () => {
     socket.emit('joinRandom', { name });
     socket.once('joined', ({ roomId, inProgress }) => {
       myRoomId = roomId;
+      showGameScreen();
       if (inProgress) {
-        // Game already running — jump straight in
-        showGameScreen();
         addMsg('', 'You joined a game in progress!', 'system');
       } else {
-        // In lobby — show waiting room
-        showWaitingScreen(roomId, true);
+        addMsg('', 'Waiting for another player to join…', 'system');
       }
     });
   });
