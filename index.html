@@ -1,0 +1,888 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Scribble</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Serif+Display&display=swap" rel="stylesheet">
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --white: #1c1c1e;
+    --bg: #111113;
+    --surface: #1c1c1e;
+    --border: #2a2a2e;
+    --border2: #3a3a3f;
+    --text: #f0f0ee;
+    --muted: #6b6b72;
+    --accent: #4f8ef7;
+    --accent-light: #151e30;
+    --green: #34d399;
+    --green-light: #0c2118;
+    --red: #f87171;
+    --yellow: #fbbf24;
+    --yellow-light: #221a09;
+    --shadow: 0 1px 3px rgba(0,0,0,0.4), 0 4px 16px rgba(0,0,0,0.3);
+    --shadow-lg: 0 4px 24px rgba(0,0,0,0.5), 0 1px 4px rgba(0,0,0,0.4);
+  }
+
+  html {
+    height: 100%;
+    overflow: hidden;
+  }
+
+  body {
+    height: 100%;
+    width: 100%;
+    font-family: 'DM Sans', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    -webkit-tap-highlight-color: transparent;
+    overflow: hidden;
+    position: fixed;
+    inset: 0;
+  }
+
+  /* FULLSCREEN APP */
+  .app {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    background: var(--bg);
+    position: relative;
+  }
+
+  /* LOBBY SCREEN */
+  #lobbyScreen {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg);
+    z-index: 10;
+    padding: 20px;
+  }
+  #lobbyScreen.hidden { display: none; }
+
+  .lobby-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 24px;
+    padding: 32px 28px;
+    width: 100%;
+    max-width: 420px;
+    box-shadow: var(--shadow-lg);
+  }
+
+  .lobby-logo {
+    font-family: 'DM Serif Display', serif;
+    font-size: 2rem;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 6px;
+  }
+  .lobby-logo-dot { width: 10px; height: 10px; background: var(--accent); border-radius: 50%; }
+  .lobby-tagline { font-size: 0.83rem; color: var(--muted); margin-bottom: 28px; font-weight: 500; }
+
+  .field-label { font-size: 0.72rem; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+
+  .lobby-input {
+    width: 100%;
+    height: 46px;
+    border: 1.5px solid var(--border);
+    border-radius: 12px;
+    padding: 0 14px;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text);
+    background: var(--bg);
+    outline: none;
+    transition: border-color 0.15s;
+    margin-bottom: 16px;
+  }
+  .lobby-input:focus { border-color: var(--accent); }
+  .lobby-input::placeholder { color: var(--muted); font-weight: 400; }
+
+  .lobby-divider { display: flex; align-items: center; gap: 10px; margin: 16px 0; }
+  .lobby-divider::before, .lobby-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+  .lobby-divider span { font-size: 0.72rem; color: var(--muted); font-weight: 600; }
+
+  .btn-group { display: flex; flex-direction: column; gap: 8px; }
+  .cta-btn {
+    width: 100%; height: 46px; border-radius: 12px; border: none;
+    background: var(--text); color: var(--bg);
+    font-family: 'DM Sans', sans-serif; font-size: 0.9rem; font-weight: 700;
+    cursor: pointer; transition: opacity 0.15s;
+  }
+  .cta-btn:active { opacity: 0.8; }
+  .cta-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .cta-btn.secondary {
+    background: var(--surface); color: var(--text); border: 1.5px solid var(--border);
+  }
+  .cta-btn.accent { background: var(--accent); color: white; }
+
+  .room-join-row { display: flex; gap: 8px; }
+  .room-join-row .lobby-input { flex: 1; margin-bottom: 0; }
+  .room-join-row .cta-btn { width: auto; padding: 0 20px; flex-shrink: 0; height: 46px; }
+
+  /* WAITING LOBBY */
+  #waitingScreen {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg);
+    z-index: 10;
+    padding: 20px;
+  }
+  #waitingScreen.hidden { display: none; }
+  .waiting-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 24px;
+    padding: 32px 28px;
+    width: 100%;
+    max-width: 420px;
+    box-shadow: var(--shadow-lg);
+  }
+  .waiting-eyebrow { font-size: 0.72rem; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+  .waiting-title { font-family: 'DM Serif Display', serif; font-size: 1.6rem; color: var(--text); margin-bottom: 4px; }
+  .room-code-display {
+    display: flex; align-items: center; gap: 10px;
+    background: var(--bg); border: 1.5px solid var(--border); border-radius: 12px;
+    padding: 12px 16px; margin: 16px 0;
+  }
+  .room-code-label { font-size: 0.72rem; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 1px; }
+  .room-code-value { font-family: 'DM Serif Display', serif; font-size: 1.8rem; color: var(--accent); letter-spacing: 6px; flex: 1; text-align: center; }
+  .copy-btn {
+    background: none; border: 1px solid var(--border); border-radius: 8px;
+    padding: 4px 10px; color: var(--muted); font-size: 0.72rem; font-weight: 600;
+    cursor: pointer; transition: all 0.15s;
+  }
+  .copy-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .waiting-players { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; max-height: 200px; overflow-y: auto; }
+  .waiting-player {
+    display: flex; align-items: center; gap: 10px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+    padding: 8px 12px;
+  }
+  .waiting-player.me { border-color: var(--accent); background: var(--accent-light); }
+  .waiting-player-avatar { width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.9rem; flex-shrink: 0; }
+  .waiting-player-name { font-weight: 600; font-size: 0.85rem; flex: 1; }
+  .host-badge { font-size: 0.65rem; font-weight: 700; background: var(--accent); color: white; border-radius: 100px; padding: 2px 7px; }
+
+  /* HEADER */
+  .header { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px 8px; background: var(--white); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .logo { font-family: 'DM Serif Display', serif; font-size: 1.25rem; color: var(--text); display: flex; align-items: center; gap: 7px; }
+  .logo-dot { width: 7px; height: 7px; background: var(--accent); border-radius: 50%; }
+  .header-meta { display: flex; gap: 6px; }
+  .pill { background: var(--bg); border: 1px solid var(--border); border-radius: 100px; padding: 3px 10px; font-size: 0.75rem; font-weight: 600; color: var(--muted); display: flex; align-items: center; gap: 4px; }
+  .pill strong { color: var(--text); font-weight: 700; }
+
+  /* WORD BAR */
+  .word-bar { display: flex; align-items: center; gap: 12px; padding: 8px 16px; background: var(--white); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .word-hint { flex: 1; text-align: center; font-family: 'DM Serif Display', serif; font-size: 1.3rem; letter-spacing: 8px; color: var(--text); }
+  .timer-wrap { flex-shrink: 0; width: 36px; height: 36px; position: relative; }
+  .timer-wrap svg { width: 36px; height: 36px; transform: rotate(-90deg); }
+  .timer-track { fill: none; stroke: var(--border); stroke-width: 3; }
+  .timer-fill { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linecap: round; transition: stroke-dashoffset 0.9s linear, stroke 0.3s; }
+  .timer-fill.urgent { stroke: var(--red); }
+  .timer-label { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 0.68rem; font-weight: 700; color: var(--text); }
+  .drawing-badge { font-size: 0.7rem; font-weight: 700; background: var(--accent); color: white; border-radius: 100px; padding: 2px 10px; white-space: nowrap; }
+
+  /* CANVAS */
+  .canvas-wrap { flex: 1; position: relative; background: #ffffff; overflow: hidden; min-height: 0; }
+  canvas { display: block; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
+  .canvas-overlay {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: rgba(17,17,19,0.7); backdrop-filter: blur(4px); color: var(--muted);
+    font-family: 'DM Serif Display', serif; font-size: 1.2rem;
+    pointer-events: none;
+  }
+  .canvas-overlay.hidden { display: none; }
+
+  /* TOOLBAR */
+  .toolbar { background: var(--white); border-top: 1px solid var(--border); padding: 8px 12px; display: flex; align-items: center; gap: 8px; flex-shrink: 0; overflow-x: auto; scrollbar-width: none; }
+  .toolbar::-webkit-scrollbar { display: none; }
+  .colors { display: flex; gap: 5px; align-items: center; flex-shrink: 0; }
+  .color-swatch { width: 22px; height: 22px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; transition: transform 0.12s, box-shadow 0.12s; flex-shrink: 0; outline: none; }
+  .color-swatch:hover { transform: scale(1.15); }
+  .color-swatch.active { border-color: var(--text); box-shadow: 0 0 0 2px var(--white), 0 0 0 4px var(--text); transform: scale(1.1); }
+  .vsep { width: 1px; height: 20px; background: var(--border); flex-shrink: 0; }
+  .sizes { display: flex; gap: 5px; align-items: center; flex-shrink: 0; }
+  .size-btn { width: 28px; height: 28px; border-radius: 50%; border: 1.5px solid var(--border); background: var(--white); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: border-color 0.12s, background 0.12s; flex-shrink: 0; }
+  .size-btn.active { border-color: var(--accent); background: var(--accent-light); }
+  .size-btn .dot { border-radius: 50%; background: var(--text); pointer-events: none; }
+  .tools { display: flex; gap: 5px; margin-left: auto; flex-shrink: 0; }
+  .tool-btn { height: 28px; border-radius: 8px; border: 1.5px solid var(--border); background: var(--white); cursor: pointer; font-size: 0.7rem; font-weight: 600; font-family: 'DM Sans', sans-serif; color: var(--muted); padding: 0 9px; display: flex; align-items: center; gap: 3px; transition: all 0.12s; white-space: nowrap; }
+  .tool-btn:hover { border-color: var(--border2); color: var(--text); }
+  .tool-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-light); }
+  .tool-btn.danger:hover { border-color: var(--red); color: var(--red); }
+  .toolbar.disabled .color-swatch, .toolbar.disabled .size-btn, .toolbar.disabled .tool-btn { opacity: 0.3; pointer-events: none; }
+
+  /* PLAYERS STRIP */
+  .players-strip { display: flex; gap: 6px; padding: 6px 14px; background: var(--white); border-top: 1px solid var(--border); overflow-x: auto; scrollbar-width: none; flex-shrink: 0; }
+  .players-strip::-webkit-scrollbar { display: none; }
+  .player-chip { display: flex; align-items: center; gap: 5px; background: var(--bg); border: 1px solid var(--border); border-radius: 100px; padding: 3px 9px 3px 3px; white-space: nowrap; transition: border-color 0.2s; flex-shrink: 0; }
+  .player-chip.me { border-color: var(--accent); background: var(--accent-light); }
+  .player-chip.guessed { border-color: var(--green); background: var(--green-light); }
+  .player-chip.drawing { border-color: var(--yellow); background: var(--yellow-light); }
+  .chip-avatar { width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.72rem; flex-shrink: 0; }
+  .chip-name { font-size: 0.72rem; font-weight: 600; color: var(--text); }
+  .chip-score { font-size: 0.67rem; color: var(--muted); font-weight: 500; }
+
+  /* CHAT */
+  .chat-section { background: var(--white); border-top: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; }
+  .chat-messages { overflow-y: auto; padding: 6px 12px; display: flex; flex-direction: column; gap: 3px; max-height: 110px; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+  .chat-messages::-webkit-scrollbar { width: 3px; }
+  .chat-messages::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+  .msg { display: flex; gap: 5px; align-items: baseline; font-size: 0.78rem; line-height: 1.4; animation: msgIn 0.18s ease; }
+  @keyframes msgIn { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:none; } }
+  .msg.correct { color: var(--green); background: var(--green-light); padding: 3px 7px; border-radius: 7px; font-weight: 600; }
+  .msg.system { color: var(--muted); font-style: italic; font-size: 0.73rem; }
+  .msg-name { font-weight: 700; color: var(--accent); flex-shrink: 0; }
+  .msg-name.me { color: var(--text); }
+  .msg-text { color: var(--text); }
+  .chat-input-row { display: flex; gap: 7px; padding: 7px 12px; border-top: 1px solid var(--border); background: var(--white); }
+  .guess-input { flex: 1; height: 38px; border: 1.5px solid var(--border); border-radius: 10px; padding: 0 11px; font-family: 'DM Sans', sans-serif; font-size: 0.83rem; font-weight: 500; color: var(--text); background: var(--bg); outline: none; transition: border-color 0.15s; }
+  .guess-input:focus { border-color: var(--accent); background: var(--white); }
+  .guess-input::placeholder { color: var(--muted); }
+  .send-btn { height: 38px; padding: 0 14px; border-radius: 10px; border: none; background: var(--accent); color: white; font-family: 'DM Sans', sans-serif; font-size: 0.8rem; font-weight: 700; cursor: pointer; transition: background 0.15s; flex-shrink: 0; }
+  .send-btn:active { background: #1d4ed8; }
+
+  /* MODALS */
+  .overlay { position: fixed; inset: 0; background: rgba(10,10,12,0.88); backdrop-filter: blur(12px); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 20px; }
+  .overlay.hidden { display: none; }
+  .modal { background: var(--white); border: 1px solid var(--border); border-radius: 24px; padding: 26px 22px; width: 100%; max-width: 340px; box-shadow: var(--shadow-lg); animation: modalIn 0.25s cubic-bezier(0.34,1.56,0.64,1); }
+  @keyframes modalIn { from { opacity:0; transform:scale(0.93) translateY(10px); } to { opacity:1; transform:none; } }
+  .modal-eyebrow { font-size: 0.7rem; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; color: var(--muted); margin-bottom: 5px; }
+  .modal-title { font-family: 'DM Serif Display', serif; font-size: 1.5rem; color: var(--text); margin-bottom: 4px; line-height: 1.2; }
+  .modal-sub { font-size: 0.82rem; color: var(--muted); margin-bottom: 18px; font-weight: 500; }
+  .word-choices { display: flex; flex-direction: column; gap: 7px; }
+  .word-choice-btn { width: 100%; padding: 13px 16px; border-radius: 12px; border: 1.5px solid var(--border); background: var(--white); font-family: 'DM Serif Display', serif; font-size: 1.05rem; color: var(--text); text-align: left; cursor: pointer; transition: all 0.15s; display: flex; align-items: center; justify-content: space-between; }
+  .word-choice-btn:hover { border-color: var(--accent); background: var(--accent-light); color: var(--accent); transform: translateX(3px); }
+  .word-choice-btn .arrow { opacity: 0; transition: opacity 0.15s; }
+  .word-choice-btn:hover .arrow { opacity: 1; }
+
+  /* Round over */
+  .the-word { font-family: 'DM Serif Display', serif; font-size: 1.8rem; color: var(--text); margin: 6px 0 18px; }
+  .score-rows { display: flex; flex-direction: column; gap: 5px; margin-bottom: 18px; max-height: 200px; overflow-y: auto; }
+  .score-row { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 10px; background: var(--bg); border: 1px solid var(--border); }
+  .score-row:first-child { border-color: var(--yellow); background: var(--yellow-light); }
+  .rank-badge { font-size: 0.95rem; width: 22px; text-align: center; flex-shrink: 0; }
+  .rank-name { flex: 1; font-weight: 600; font-size: 0.83rem; }
+  .rank-pts { font-weight: 700; font-size: 0.83rem; color: var(--accent); }
+
+  /* TOAST */
+  .toast { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%) scale(0.85); background: var(--text); color: var(--bg); font-weight: 700; font-size: 1rem; padding: 11px 22px; border-radius: 100px; z-index: 100; pointer-events: none; opacity: 0; transition: all 0.2s cubic-bezier(0.34,1.56,0.64,1); white-space: nowrap; }
+  .toast.show { opacity: 1; transform: translate(-50%,-50%) scale(1); }
+</style>
+</head>
+<body>
+
+<!-- ── LOBBY ── -->
+<div id="lobbyScreen">
+  <div class="lobby-card">
+    <div class="lobby-logo"><span class="lobby-logo-dot"></span> Scribble</div>
+    <div class="lobby-tagline">Draw. Guess. Win. — Multiplayer</div>
+
+    <div class="field-label">Your name</div>
+    <input class="lobby-input" id="nameInput" type="text" placeholder="Enter your name…" maxlength="20" autocomplete="off">
+
+    <div class="btn-group">
+      <button class="cta-btn accent" id="randomBtn">🎲 Play with random players</button>
+    </div>
+
+    <div class="lobby-divider"><span>OR</span></div>
+
+    <button class="cta-btn secondary" id="createBtn" style="margin-bottom:10px">✦ Create private room</button>
+
+    <div class="field-label">Join room with code</div>
+    <div class="room-join-row">
+      <input class="lobby-input" id="roomCodeInput" type="text" placeholder="ABC123" maxlength="6" autocomplete="off" style="text-transform:uppercase;letter-spacing:3px;font-family:'DM Serif Display',serif;">
+      <button class="cta-btn secondary" id="joinBtn">Join →</button>
+    </div>
+    <div id="lobbyError" style="color:var(--red);font-size:0.78rem;margin-top:-8px;min-height:18px;"></div>
+  </div>
+</div>
+
+<!-- ── WAITING ROOM ── -->
+<div id="waitingScreen" class="hidden">
+  <div class="waiting-card">
+    <div class="waiting-eyebrow" id="waitingEyebrow">Private Room</div>
+    <div class="waiting-title" id="waitingTitle">Waiting for players…</div>
+
+    <div class="room-code-display" id="roomCodeDisplay">
+      <div>
+        <div class="room-code-label">Room code</div>
+        <div class="room-code-value" id="roomCodeValue">——</div>
+      </div>
+      <button class="copy-btn" id="copyCodeBtn">Copy</button>
+    </div>
+
+    <div id="waitingPlayersEl" class="waiting-players"></div>
+
+    <button class="cta-btn accent" id="startGameBtn" disabled>Start game →</button>
+    <button class="cta-btn secondary" style="margin-top:8px" id="leaveBtn">Leave room</button>
+  </div>
+</div>
+
+<!-- ── GAME ── -->
+<div class="app" id="gameScreen" style="display:none">
+  <header class="header">
+    <div class="logo"><span class="logo-dot"></span> Scribble</div>
+    <div class="header-meta">
+      <div class="pill">Round <strong id="roundNum">1</strong>/<strong id="maxRoundNum">3</strong></div>
+      <div class="pill">⭐ <strong id="totalScore">0</strong></div>
+      <div class="pill" id="roomPill">——</div>
+    </div>
+  </header>
+
+  <div class="word-bar">
+    <div class="word-hint" id="wordHint">—</div>
+    <span class="drawing-badge hidden" id="drawingBadge">✏️ Drawing</span>
+    <div class="timer-wrap">
+      <svg viewBox="0 0 36 36">
+        <circle class="timer-track" cx="18" cy="18" r="14"/>
+        <circle class="timer-fill" id="timerFill" cx="18" cy="18" r="14"/>
+      </svg>
+      <div class="timer-label" id="timerNum">60</div>
+    </div>
+  </div>
+
+  <div class="canvas-wrap">
+    <canvas id="c"></canvas>
+    <div class="canvas-overlay hidden" id="canvasOverlay">Waiting for drawer…</div>
+  </div>
+
+  <div class="toolbar" id="toolbar">
+    <div class="colors" id="colorPalette"></div>
+    <div class="vsep"></div>
+    <div class="sizes">
+      <button class="size-btn active" data-size="3"><div class="dot" style="width:4px;height:4px"></div></button>
+      <button class="size-btn" data-size="9"><div class="dot" style="width:9px;height:9px"></div></button>
+      <button class="size-btn" data-size="18"><div class="dot" style="width:15px;height:15px"></div></button>
+    </div>
+    <div class="tools">
+      <button class="tool-btn" id="eraserBtn">⌫ Erase</button>
+      <button class="tool-btn" id="fillBtn">🪣 Fill</button>
+      <button class="tool-btn danger" id="clearBtn">✕ Clear</button>
+    </div>
+  </div>
+
+  <div class="players-strip" id="playersStrip"></div>
+
+  <div class="chat-section">
+    <div class="chat-messages" id="chatMessages"></div>
+    <div class="chat-input-row">
+      <input class="guess-input" id="guessInput" type="text" placeholder="Type your guess…" autocomplete="off" autocorrect="off" spellcheck="false">
+      <button class="send-btn" id="sendBtn">Send</button>
+    </div>
+  </div>
+</div>
+
+<!-- Word Choose Modal -->
+<div class="overlay hidden" id="wordModal">
+  <div class="modal">
+    <div class="modal-eyebrow">Your turn!</div>
+    <div class="modal-title">Pick a word to draw</div>
+    <div class="modal-sub">Others will try to guess what you draw.</div>
+    <div class="word-choices" id="wordChoices"></div>
+  </div>
+</div>
+
+<!-- Round Over Modal -->
+<div class="overlay hidden" id="roundModal">
+  <div class="modal">
+    <div class="modal-eyebrow" id="roundEyebrow">Round complete</div>
+    <div class="modal-title" id="roundTitle">Time's up!</div>
+    <div class="modal-sub">The word was</div>
+    <div class="the-word" id="roundWord"></div>
+    <div class="score-rows" id="scoreRows"></div>
+    <div style="color:var(--muted);font-size:0.78rem;text-align:center">Next round starting automatically…</div>
+  </div>
+</div>
+
+<div class="toast" id="toast">✓ Correct!</div>
+
+<script>
+// ── Config ────────────────────────────────────────────────────────
+const SERVER_URL = window.location.origin; // same-origin when served by the server
+
+// ── State ────────────────────────────────────────────────────────
+let socket = null;
+let mySocketId = null;
+let myName = '';
+let myRoomId = '';
+let isDrawing = false;
+let amIDrawer = false;
+let roomState = null; // latest from server
+
+const COLORS = ['#1a1a18','#ffffff','#ef4444','#f97316','#eab308','#22c55e','#3b82f6','#8b5cf6','#ec4899','#6b7280','#92400e','#065f46','#1e3a8a','#fde68a','#fed7aa'];
+
+let G = { brushColor: '#1a1a18', brushSize: 3, tool: 'pen', drawing: false, lx: 0, ly: 0 };
+
+const CIRC = 2 * Math.PI * 14;
+
+// ── Canvas ────────────────────────────────────────────────────────
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const DPR = window.devicePixelRatio || 1;
+
+function resizeCanvas() {
+  const wrap = canvas.parentElement;
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  const img = canvas.width > 1 ? ctx.getImageData(0, 0, canvas.width, canvas.height) : null;
+  canvas.width = w * DPR;
+  canvas.height = h * DPR;
+  canvas.style.width = w + 'px';
+  canvas.style.height = h + 'px';
+  ctx.scale(DPR, DPR);
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
+  if (img) ctx.putImageData(img, 0, 0);
+}
+
+function getPos(e) {
+  const r = canvas.getBoundingClientRect();
+  const s = e.touches ? e.touches[0] : e;
+  return { x: s.clientX - r.left, y: s.clientY - r.top };
+}
+
+function paint(p, start) {
+  if (G.tool === 'fill') return;
+  const color = G.tool === 'eraser' ? '#fff' : G.brushColor;
+  if (start) {
+    ctx.beginPath(); ctx.arc(p.x, p.y, G.brushSize / 2, 0, Math.PI * 2);
+    ctx.fillStyle = color; ctx.fill();
+  } else {
+    ctx.beginPath(); ctx.moveTo(G.lx, G.ly); ctx.lineTo(p.x, p.y);
+    ctx.strokeStyle = color; ctx.lineWidth = G.brushSize;
+    ctx.lineCap = ctx.lineJoin = 'round'; ctx.stroke();
+  }
+  G.lx = p.x; G.ly = p.y;
+}
+
+function remoteDrawCmd(data) {
+  // Replay a draw command received from server (already in CSS pixel space)
+  const { type, x, y, lx, ly, color, size } = data;
+  if (type === 'start') {
+    ctx.beginPath(); ctx.arc(x, y, size / 2, 0, Math.PI * 2);
+    ctx.fillStyle = color; ctx.fill();
+  } else {
+    ctx.beginPath(); ctx.moveTo(lx, ly); ctx.lineTo(x, y);
+    ctx.strokeStyle = color; ctx.lineWidth = size;
+    ctx.lineCap = ctx.lineJoin = 'round'; ctx.stroke();
+  }
+}
+
+function hexToRgb(hex) {
+  return [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16), 255];
+}
+function colorsMatch(a, b, tol = 30) {
+  return Math.abs(a[0]-b[0])+Math.abs(a[1]-b[1])+Math.abs(a[2]-b[2])+Math.abs(a[3]-b[3]) < tol;
+}
+function floodFill(startX, startY) {
+  startX = Math.round(startX * DPR); startY = Math.round(startY * DPR);
+  const w = canvas.width, h = canvas.height;
+  const imgData = ctx.getImageData(0, 0, w, h);
+  const data = imgData.data;
+  const idx = (x, y) => (y * w + x) * 4;
+  const target = [data[idx(startX,startY)],data[idx(startX,startY)+1],data[idx(startX,startY)+2],data[idx(startX,startY)+3]];
+  const fill = hexToRgb(G.brushColor);
+  if (colorsMatch(target, fill, 5)) return;
+  const stack = [[startX, startY]];
+  const visited = new Uint8Array(w * h);
+  while (stack.length) {
+    const [x, y] = stack.pop();
+    if (x < 0 || x >= w || y < 0 || y >= h) continue;
+    if (visited[y*w+x]) continue;
+    const i = idx(x, y);
+    if (!colorsMatch([data[i],data[i+1],data[i+2],data[i+3]], target)) continue;
+    visited[y*w+x] = 1;
+    data[i]=fill[0]; data[i+1]=fill[1]; data[i+2]=fill[2]; data[i+3]=fill[3];
+    stack.push([x+1,y],[x-1,y],[x,y+1],[x,y-1]);
+  }
+  ctx.putImageData(imgData, 0, 0);
+}
+
+function clearCanvas(emit = false) {
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width / DPR, canvas.height / DPR);
+  if (emit && socket) socket.emit('clearCanvas');
+}
+
+// ── Canvas events ──────────────────────────────────────────────────
+function handleDrawStart(p) {
+  if (!amIDrawer) return;
+  if (G.tool === 'fill') {
+    floodFill(p.x, p.y);
+    socket?.emit('draw', { type: 'fill', x: p.x / (canvas.width / DPR), y: p.y / (canvas.height / DPR), color: G.brushColor });
+    return;
+  }
+  G.drawing = true;
+  paint(p, true);
+  socket?.emit('draw', { type: 'start', x: p.x, y: p.y, color: G.tool === 'eraser' ? '#fff' : G.brushColor, size: G.brushSize });
+}
+
+function handleDrawMove(p) {
+  if (!amIDrawer || !G.drawing || G.tool === 'fill') return;
+  const color = G.tool === 'eraser' ? '#fff' : G.brushColor;
+  socket?.emit('draw', { type: 'move', x: p.x, y: p.y, lx: G.lx, ly: G.ly, color, size: G.brushSize });
+  paint(p, false);
+}
+
+canvas.addEventListener('mousedown', e => handleDrawStart(getPos(e)));
+canvas.addEventListener('mousemove', e => { if (G.drawing) handleDrawMove(getPos(e)); });
+canvas.addEventListener('mouseup', () => G.drawing = false);
+canvas.addEventListener('mouseleave', () => G.drawing = false);
+canvas.addEventListener('touchstart', e => { e.preventDefault(); handleDrawStart(getPos(e)); }, { passive: false });
+canvas.addEventListener('touchmove', e => { e.preventDefault(); if (G.drawing) handleDrawMove(getPos(e)); }, { passive: false });
+canvas.addEventListener('touchend', () => G.drawing = false);
+
+// ── Toolbar ───────────────────────────────────────────────────────
+function initToolbar() {
+  const pal = document.getElementById('colorPalette');
+  COLORS.forEach((c, i) => {
+    const b = document.createElement('button');
+    b.className = 'color-swatch' + (i === 0 ? ' active' : '');
+    b.style.background = c;
+    if (c === '#ffffff') b.style.boxShadow = 'inset 0 0 0 1px #3a3a3f';
+    if (c === '#1a1a18') b.style.boxShadow = 'inset 0 0 0 1px #6b6b72';
+    b.onclick = () => {
+      document.querySelectorAll('.color-swatch').forEach(x => x.classList.remove('active'));
+      b.classList.add('active'); G.brushColor = c; setTool('pen');
+    };
+    pal.appendChild(b);
+  });
+  document.querySelectorAll('.size-btn').forEach(b => {
+    b.onclick = () => {
+      document.querySelectorAll('.size-btn').forEach(x => x.classList.remove('active'));
+      b.classList.add('active'); G.brushSize = +b.dataset.size;
+    };
+  });
+  document.getElementById('eraserBtn').onclick = () => setTool(G.tool === 'eraser' ? 'pen' : 'eraser');
+  document.getElementById('fillBtn').onclick = () => setTool(G.tool === 'fill' ? 'pen' : 'fill');
+  document.getElementById('clearBtn').onclick = () => clearCanvas(true);
+}
+
+function setTool(t) {
+  G.tool = t;
+  document.getElementById('eraserBtn').classList.toggle('active', t === 'eraser');
+  document.getElementById('fillBtn').classList.toggle('active', t === 'fill');
+  canvas.style.cursor = t === 'fill' ? 'cell' : t === 'eraser' ? 'cell' : 'crosshair';
+}
+
+function setDrawerMode(isDrawer) {
+  amIDrawer = isDrawer;
+  const tb = document.getElementById('toolbar');
+  tb.classList.toggle('disabled', !isDrawer);
+  document.getElementById('canvasOverlay').classList.toggle('hidden', isDrawer);
+  document.getElementById('drawingBadge').classList.toggle('hidden', !isDrawer);
+  canvas.style.pointerEvents = isDrawer ? 'auto' : 'none';
+}
+
+// ── Players ────────────────────────────────────────────────────────
+function renderPlayers(state) {
+  if (!state) return;
+  const strip = document.getElementById('playersStrip');
+  strip.innerHTML = '';
+  const drawer = state.players[state.drawerIdx % state.players.length];
+  state.players.forEach(p => {
+    const isMe = p.socketId === mySocketId;
+    const isDrawingP = drawer && p.socketId === drawer.socketId;
+    const chip = document.createElement('div');
+    chip.className = 'player-chip' + (isMe ? ' me' : '') + (p.guessed ? ' guessed' : '') + (isDrawingP && state.phase === 'draw' ? ' drawing' : '');
+    chip.innerHTML = `<div class="chip-avatar" style="background:${p.avatarBg}">${p.avatar}</div><div><div class="chip-name">${p.name}${isDrawingP && state.phase === 'draw' ? ' ✏️' : ''}${p.guessed ? ' ✓' : ''}</div><div class="chip-score">${p.score} pts</div></div>`;
+    strip.appendChild(chip);
+  });
+}
+
+// ── Chat ───────────────────────────────────────────────────────────
+function addMsg(name, text, type = '') {
+  const box = document.getElementById('chatMessages');
+  const div = document.createElement('div');
+  div.className = 'msg' + (type ? ' ' + type : '');
+  if (type === 'system') div.textContent = text;
+  else div.innerHTML = `<span class="msg-name${name === myName ? ' me' : ''}">${name}</span><span class="msg-text"> ${text}</span>`;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+}
+
+// ── Timer ─────────────────────────────────────────────────────────
+function updateTimer(timeLeft, totalTime = 60) {
+  document.getElementById('timerNum').textContent = timeLeft;
+  const fill = document.getElementById('timerFill');
+  fill.style.strokeDasharray = CIRC;
+  fill.style.strokeDashoffset = CIRC * (1 - timeLeft / totalTime);
+  fill.classList.toggle('urgent', timeLeft <= 10);
+}
+
+// ── Toast ─────────────────────────────────────────────────────────
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 1600);
+}
+
+// ── Socket connection ──────────────────────────────────────────────
+function connectSocket(cb) {
+  if (socket && socket.connected) { cb(); return; }
+  socket = io(SERVER_URL);
+  socket.on('connect', () => { mySocketId = socket.id; cb(); });
+  socket.on('connect_error', () => showLobbyError('Cannot connect to server'));
+
+  socket.on('joined', ({ roomId, socketId }) => {
+    mySocketId = socketId;
+    myRoomId = roomId;
+  });
+
+  socket.on('error', msg => showLobbyError(msg));
+
+  socket.on('roomState', state => {
+    roomState = state;
+    renderPlayers(state);
+    renderWaitingPlayers(state);
+    document.getElementById('roundNum').textContent = state.round;
+    document.getElementById('maxRoundNum').textContent = state.maxRounds;
+
+    // Check if we should enable start
+    const isHost = state.players[0]?.socketId === mySocketId;
+    document.getElementById('startGameBtn').disabled = !isHost || state.players.length < 1;
+
+    // Are we the drawer?
+    const drawer = state.players[state.drawerIdx % state.players.length];
+    if (state.phase === 'draw') {
+      setDrawerMode(drawer?.socketId === mySocketId);
+    }
+  });
+
+  socket.on('roundStart', ({ drawerName, round, maxRounds, phase }) => {
+    document.getElementById('roundNum').textContent = round;
+    document.getElementById('maxRoundNum').textContent = maxRounds;
+    if (phase === 'choose') {
+      addMsg('', `${drawerName} is choosing a word…`, 'system');
+      setDrawerMode(false);
+      document.getElementById('wordHint').textContent = '—';
+    }
+  });
+
+  socket.on('chooseWord', ({ picks, round, maxRounds }) => {
+    showGameScreen();
+    const container = document.getElementById('wordChoices');
+    container.innerHTML = '';
+    picks.forEach(w => {
+      const btn = document.createElement('button');
+      btn.className = 'word-choice-btn';
+      btn.innerHTML = `<span>${w}</span><span class="arrow">→</span>`;
+      btn.onclick = () => {
+        socket.emit('wordChosen', { word: w });
+        document.getElementById('wordModal').classList.add('hidden');
+      };
+      container.appendChild(btn);
+    });
+    document.getElementById('wordModal').classList.remove('hidden');
+    setDrawerMode(true);
+  });
+
+  socket.on('yourWord', word => {
+    document.getElementById('wordHint').textContent = word;
+  });
+
+  socket.on('wordHint', hint => {
+    document.getElementById('wordHint').textContent = hint;
+  });
+
+  socket.on('phaseChange', ({ phase }) => {
+    if (phase === 'draw') {
+      document.getElementById('wordModal').classList.add('hidden');
+      updateTimer(60, 60);
+    }
+  });
+
+  socket.on('timer', ({ timeLeft }) => {
+    updateTimer(timeLeft, roomState?.totalTime || 60);
+  });
+
+  socket.on('draw', data => {
+    if (data.type === 'fill') {
+      const fx = data.x * (canvas.width / DPR), fy = data.y * (canvas.height / DPR);
+      G.brushColor = data.color;
+      floodFill(fx, fy);
+    } else {
+      remoteDrawCmd(data);
+      // Update lx/ly for remote
+      G.lx = data.x; G.ly = data.y;
+    }
+  });
+
+  socket.on('clearCanvas', () => clearCanvas(false));
+
+  socket.on('chat', ({ name, text, type }) => addMsg(name, text, type));
+
+  socket.on('correct', ({ name, pts }) => {
+    if (name === myName) {
+      showToast(`✓ +${pts} pts!`);
+      const cur = parseInt(document.getElementById('totalScore').textContent) || 0;
+      document.getElementById('totalScore').textContent = cur + pts;
+    }
+    addMsg(name, `guessed the word! +${pts} pts`, 'correct');
+  });
+
+  socket.on('roundOver', ({ word, round, maxRounds, isLast, scores }) => {
+    G.drawing = false;
+    setDrawerMode(false);
+    document.getElementById('wordModal').classList.add('hidden');
+    document.getElementById('roundWord').textContent = word;
+    document.getElementById('roundEyebrow').textContent = `Round ${round} of ${maxRounds}`;
+    document.getElementById('roundTitle').textContent = isLast ? 'Game over!' : "Time's up!";
+    const medals = ['🥇','🥈','🥉'];
+    const rows = document.getElementById('scoreRows');
+    rows.innerHTML = '';
+    scores.forEach((p, i) => {
+      const row = document.createElement('div');
+      row.className = 'score-row';
+      row.innerHTML = `<span class="rank-badge">${medals[i] || '#' + (i+1)}</span><span class="rank-name">${p.name}</span><span class="rank-pts">${p.score} pts</span>`;
+      rows.appendChild(row);
+    });
+    document.getElementById('roundModal').classList.remove('hidden');
+    if (isLast) document.getElementById('totalScore').textContent = '0';
+    setTimeout(() => document.getElementById('roundModal').classList.add('hidden'), 5800);
+  });
+}
+
+// ── Screens ────────────────────────────────────────────────────────
+function showLobbyError(msg) {
+  document.getElementById('lobbyError').textContent = msg;
+  setTimeout(() => document.getElementById('lobbyError').textContent = '', 3000);
+}
+
+function showWaitingScreen(roomId, isPublic) {
+  document.getElementById('lobbyScreen').classList.add('hidden');
+  document.getElementById('waitingScreen').classList.remove('hidden');
+  document.getElementById('gameScreen').style.display = 'none';
+  document.getElementById('roomCodeValue').textContent = roomId;
+  document.getElementById('waitingEyebrow').textContent = isPublic ? 'Public Room' : 'Private Room';
+  document.getElementById('roomCodeDisplay').style.display = isPublic ? 'none' : 'flex';
+}
+
+function showGameScreen() {
+  document.getElementById('lobbyScreen').classList.add('hidden');
+  document.getElementById('waitingScreen').classList.add('hidden');
+  document.getElementById('gameScreen').style.display = 'flex';
+  document.getElementById('roomPill').textContent = myRoomId;
+  resizeCanvas();
+}
+
+function renderWaitingPlayers(state) {
+  if (!state) return;
+  const container = document.getElementById('waitingPlayersEl');
+  container.innerHTML = '';
+  state.players.forEach((p, i) => {
+    const isMe = p.socketId === mySocketId;
+    const div = document.createElement('div');
+    div.className = 'waiting-player' + (isMe ? ' me' : '');
+    div.innerHTML = `<div class="waiting-player-avatar" style="background:${p.avatarBg}">${p.avatar}</div>
+      <div class="waiting-player-name">${p.name}${isMe ? ' (you)' : ''}</div>
+      ${i === 0 ? '<span class="host-badge">Host</span>' : ''}`;
+    container.appendChild(div);
+  });
+}
+
+// ── Lobby buttons ──────────────────────────────────────────────────
+function getName() {
+  const n = document.getElementById('nameInput').value.trim();
+  if (!n) { showLobbyError('Enter your name first!'); return null; }
+  return n;
+}
+
+document.getElementById('randomBtn').onclick = () => {
+  const name = getName(); if (!name) return;
+  myName = name;
+  connectSocket(() => {
+    socket.emit('joinRandom', { name });
+    socket.once('joined', ({ roomId }) => {
+      myRoomId = roomId;
+      showWaitingScreen(roomId, true);
+    });
+  });
+};
+
+document.getElementById('createBtn').onclick = () => {
+  const name = getName(); if (!name) return;
+  myName = name;
+  connectSocket(() => {
+    socket.emit('createRoom', { name, isPublic: false });
+    socket.once('joined', ({ roomId }) => {
+      myRoomId = roomId;
+      showWaitingScreen(roomId, false);
+    });
+  });
+};
+
+document.getElementById('joinBtn').onclick = () => {
+  const name = getName(); if (!name) return;
+  const code = document.getElementById('roomCodeInput').value.trim().toUpperCase();
+  if (code.length < 4) { showLobbyError('Enter a valid room code'); return; }
+  myName = name;
+  connectSocket(() => {
+    socket.emit('joinRoom', { roomId: code, name });
+    socket.once('joined', ({ roomId }) => {
+      myRoomId = roomId;
+      showWaitingScreen(roomId, false);
+    });
+  });
+};
+
+document.getElementById('roomCodeInput').addEventListener('input', e => {
+  e.target.value = e.target.value.toUpperCase();
+});
+
+document.getElementById('copyCodeBtn').onclick = () => {
+  navigator.clipboard.writeText(myRoomId).then(() => {
+    document.getElementById('copyCodeBtn').textContent = 'Copied!';
+    setTimeout(() => document.getElementById('copyCodeBtn').textContent = 'Copy', 1500);
+  });
+};
+
+document.getElementById('startGameBtn').onclick = () => {
+  socket?.emit('startGame');
+  showGameScreen();
+};
+
+document.getElementById('leaveBtn').onclick = () => {
+  socket?.disconnect();
+  socket = null;
+  document.getElementById('waitingScreen').classList.add('hidden');
+  document.getElementById('lobbyScreen').classList.remove('hidden');
+};
+
+// ── Chat ───────────────────────────────────────────────────────────
+document.getElementById('sendBtn').onclick = sendGuess;
+document.getElementById('guessInput').addEventListener('keydown', e => { if (e.key === 'Enter') sendGuess(); });
+
+function sendGuess() {
+  const inp = document.getElementById('guessInput');
+  const v = inp.value.trim(); inp.value = '';
+  if (!v || !socket) return;
+  socket.emit('guess', { text: v });
+}
+
+// ── Init ───────────────────────────────────────────────────────────
+new ResizeObserver(resizeCanvas).observe(document.getElementById('c').parentElement);
+initToolbar();
+resizeCanvas();
+
+// Timer fill init
+const fill = document.getElementById('timerFill');
+fill.style.strokeDasharray = CIRC;
+fill.style.strokeDashoffset = 0;
+</script>
+</body>
+</html>
