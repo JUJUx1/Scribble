@@ -588,8 +588,20 @@ function connect(cb) {
     document.getElementById('rNum').textContent = state.round;
     document.getElementById('rMax').textContent = state.maxRounds;
     const d = state.players[state.drawerIdx % state.players.length];
-    if (state.phase === 'draw') setDrawer(d?.id === myId);
+    if (state.phase === 'draw') {
+      setDrawer(d?.id === myId);
+      // Clear overlay for guessers — they can see the canvas
+      if (d?.id !== myId) setCanvasMsg(null);
+    }
+    if (state.phase === 'choose') setDrawer(false);
     if (state.phase === 'lobby') setDrawer(false);
+  });
+
+  // Server signals game is active — clear the overlay
+  socket.on('gameActive', ({ phase }) => {
+    if (phase === 'draw' || phase === 'choose') {
+      if (!amDrawer) setCanvasMsg(null);
+    }
   });
 
   socket.on('sys', text => {
@@ -601,7 +613,11 @@ function connect(cb) {
     }
   });
 
-  socket.on('hint', h => { document.getElementById('wHint').textContent = h; });
+  socket.on('hint', h => {
+    document.getElementById('wHint').textContent = h;
+    // If we received a hint, the round is active — clear the overlay
+    setCanvasMsg(null);
+  });
 
   socket.on('tick', t => setTimer(t, lastState?.totalTime || 60));
 
