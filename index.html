@@ -480,6 +480,20 @@ function setDrawer(yes) {
   document.getElementById('toolbar').classList.toggle('off',!yes);
   document.getElementById('drawBadge').classList.toggle('hidden',!yes);
   canvas.style.pointerEvents=yes?'auto':'none';
+  // Drawer cannot type guesses
+  const inp = document.getElementById('chatInp');
+  const btn = document.getElementById('sendBtn');
+  if (yes) {
+    inp.disabled = true;
+    inp.placeholder = 'You are drawing…';
+    btn.disabled = true;
+    btn.style.opacity = '0.3';
+  } else {
+    inp.disabled = false;
+    inp.placeholder = 'Type your guess…';
+    btn.disabled = false;
+    btn.style.opacity = '';
+  }
 }
 
 // ── Canvas overlay message ─────────────────────────────────────────
@@ -614,8 +628,10 @@ function connect(cb) {
   });
 
   socket.on('hint', h => {
-    document.getElementById('wHint').textContent = h;
-    // If we received a hint, the round is active — clear the overlay
+    // Never overwrite the drawer's own word with the blanked hint
+    if (!amDrawer) {
+      document.getElementById('wHint').textContent = h;
+    }
     setCanvasMsg(null);
   });
 
