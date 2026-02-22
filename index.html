@@ -575,7 +575,7 @@ function renderWaiting(state) {
 // ── Socket ────────────────────────────────────────────────────────
 function connect(cb) {
   if (socket?.connected) { cb(); return; }
-  socket = io(window.location.origin);
+  socket = io('https://scribble-mbha.onrender.com', { transports: ['websocket', 'polling'] });
   socket.on('connect', () => { myId = socket.id; cb(); });
   socket.on('connect_error', () => showErr('Cannot connect to server'));
 
