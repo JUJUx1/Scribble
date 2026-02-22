@@ -131,6 +131,9 @@ io.on('connection', socket => {
   let room = null;
 
   function addToRoom(r, name) {
+    // Prevent duplicate: if socket already in room, do nothing
+    if (r.players.find(p => p.id === socket.id)) return;
+
     room = r;
     const idx = r.players.length;
     r.players.push({ id: socket.id, name, score: 0, avatar: AVATARS[idx%AVATARS.length], bg: AVATAR_BG[idx%AVATAR_BG.length], guessed: false });
@@ -141,11 +144,15 @@ io.on('connection', socket => {
     io.to(r.id).emit('state', roomInfo(r));
     io.to(r.id).emit('sys', `${name} joined`);
 
-    // Catch up late joiner
+    // Catch up late joiner mid-round
     if (r.phase === 'draw') {
       const reveal = r.timeLeft <= 20 ? 2 : r.timeLeft <= 40 ? 1 : 0;
       socket.emit('hint', hint(r.word, reveal));
       socket.emit('tick', r.timeLeft);
+      // Signal client to clear overlay and show canvas
+      socket.emit('gameActive', { phase: 'draw' });
+    } else if (r.phase === 'choose') {
+      socket.emit('gameActive', { phase: 'choose' });
     }
 
     // Auto-start public room the moment 2 players are in
