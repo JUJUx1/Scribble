@@ -957,7 +957,7 @@ function goLobby() {
   document.getElementById('waiting').classList.add('hidden');
   document.getElementById('game').style.display = 'none';
   myVote = null;
-  voiceStop(); // Leave voice on lobby
+  voiceStop();
 }
 
 function goWaiting(roomId) {
@@ -976,7 +976,7 @@ function goGame() {
   // Two RAF calls ensure the flex layout has fully resolved before we measure
   requestAnimationFrame(() => requestAnimationFrame(() => resizeCanvas()));
   requestFullscreen();
-  voiceStart(); // Auto-join voice
+  voiceStart();
 }
 
 function requestFullscreen() {
@@ -1003,6 +1003,7 @@ function connect(cb) {
 
   socket.on('connect', () => {
     myId = socket.id;
+    voiceEnsureBound(); // bind voice events on connect
     cb();
   });
   socket.on('connect_error', () => showErr('Cannot connect to server'));
@@ -1019,7 +1020,6 @@ function connect(cb) {
   });
 
   socket.on('err', msg => showErr(msg));
-  voiceBindSocket();
 
   socket.on('state', state => {
     lastState = state;
@@ -1338,129 +1338,223 @@ window.addEventListener('orientationchange', () => {
 
 initToolbar();
 resizeCanvas();
-voiceLoadIce(); // pre-warm
 document.getElementById('tFill').style.strokeDasharray = CIRC;
 document.getElementById('tFill').style.strokeDashoffset = 0;
 
-// ═══════════════════════════════════════════════════════════
-// VOICE CALL — WebRTC multi-party via mesh (up to ~6 players)
-// Each peer connects directly to every other peer.
-// The game's Socket.io server is reused for signaling.
-// ═══════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════
+// VOICE — WebRTC mesh, piggybacks on game socket for signaling
+// ═══════════════════════════════════════════════════════════════
 const TURN_API = "https://uno.metered.live/api/v1/turn/credentials?apiKey=10758b483f5778222bd48a13781739fbd98c";
-let voiceIceServers = [{ urls: "stun:stun.l.google.com:19302" }];
-let voiceMicStream  = null;   // local mic MediaStream
+let voiceIce        = [{ urls: 'stun:stun.l.google.com:19302' }];
+let voiceMicStream  = null;
 let voiceMuted      = false;
-let voicePeers      = {};     // peerId → RTCPeerConnection
+let voicePeers      = {};       // socketId → RTCPeerConnection
 let voiceActive     = false;
-let voiceAnalysers  = {};     // peerId → { analyser, buf }
-let voiceSpeaking   = {};     // peerId → bool
-let voiceAnimFrame  = null;
-const MY_VOICE_ID   = () => socket?.id || '';
+let voiceSocketBound = false;   // only bind socket events once
+let voiceAnalysers  = {};
+let voiceSpeaking   = {};
+let voiceRafId      = null;
 
-// Fetch real TURN servers from Metered
+// ── Load Metered TURN servers ─────────────────────────────────
 async function voiceLoadIce() {
   try {
     const r = await fetch(TURN_API);
-    voiceIceServers = await r.json();
-    console.log('[Voice] Loaded', voiceIceServers.length, 'ICE servers');
-  } catch(e) { console.warn('[Voice] ICE fetch failed, using STUN fallback'); }
+    voiceIce = await r.json();
+    vdbg('ICE loaded: ' + voiceIce.length + ' servers');
+  } catch(e) { vdbg('ICE fetch failed, using STUN only'); }
 }
 
-// ── Start voice for this player (called on goGame) ──
+// ── Debug helper — shows in chat as sys message ───────────────
+function vdbg(msg) {
+  console.log('[Voice]', msg);
+  addMsg('', '🎙️ ' + msg, 'sys');
+}
+
+// ── Bind socket voice events ONCE ────────────────────────────
+function voiceEnsureBound() {
+  if (voiceSocketBound || !socket) return;
+  voiceSocketBound = true;
+  vdbg('Socket events bound');
+
+  // Someone new joined voice in our room — we call them
+  socket.on('voice:joined', ({ id }) => {
+    vdbg('Peer joined voice: ' + id.slice(0,6));
+    if (!voiceActive || id === socket.id) return;
+    voiceDial(id, true);
+  });
+
+  // Someone left
+  socket.on('voice:left', ({ id }) => {
+    vdbg('Peer left voice: ' + id.slice(0,6));
+    voiceClosePeer(id);
+  });
+
+  // Incoming offer (we are callee)
+  socket.on('voice:offer', async ({ from, offer }) => {
+    vdbg('Got offer from ' + from.slice(0,6));
+    if (!voiceActive) { vdbg('Not active, ignoring offer'); return; }
+    const pc = voiceDial(from, false);
+    try {
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      pc._remoteSet = true;
+      await voiceFlushIce(pc);
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      socket.emit('voice:answer', { to: from, answer });
+      vdbg('Sent answer to ' + from.slice(0,6));
+    } catch(e) { vdbg('Offer error: ' + e.message); }
+  });
+
+  // Incoming answer (we were caller)
+  socket.on('voice:answer', async ({ from, answer }) => {
+    vdbg('Got answer from ' + from.slice(0,6));
+    const pc = voicePeers[from];
+    if (!pc) { vdbg('No pc for answer'); return; }
+    try {
+      await pc.setRemoteDescription(new RTCSessionDescription(answer));
+      pc._remoteSet = true;
+      await voiceFlushIce(pc);
+    } catch(e) { vdbg('Answer error: ' + e.message); }
+  });
+
+  // ICE candidate
+  socket.on('voice:ice', async ({ from, candidate }) => {
+    const pc = voicePeers[from];
+    if (!pc || !candidate) return;
+    if (pc._remoteSet) {
+      try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); }
+      catch(e) { /* ignore stale */ }
+    } else {
+      pc._iceBuf = pc._iceBuf || [];
+      pc._iceBuf.push(candidate);
+    }
+  });
+
+  // Speaking indicator
+  socket.on('voice:speaking', ({ id, speaking }) => {
+    voiceSpeaking[id] = speaking;
+    voiceRenderBadge(id);
+  });
+}
+
+// ── Start voice (called when entering game) ───────────────────
 async function voiceStart() {
-  if (voiceActive) return;
+  if (voiceActive) { vdbg('Already active'); return; }
+  vdbg('Starting voice...');
+
+  // Bind socket listeners first
+  voiceEnsureBound();
+
+  // Load TURN
   await voiceLoadIce();
+
+  // Get mic
   try {
     voiceMicStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    vdbg('Mic acquired ✅');
   } catch(e) {
-    console.warn('[Voice] Mic denied:', e);
-    addMsg('', '🎙️ Mic blocked — voice disabled', 'sys');
+    vdbg('Mic DENIED: ' + e.message);
     return;
   }
+
   voiceActive = true;
   voiceMuted  = false;
-  addMsg('', '🎙️ Voice connected — tap your avatar to mute', 'sys');
 
-  // Tell others we're here
-  socket?.emit('voice:join', { id: MY_VOICE_ID() });
+  // Tell everyone in the room we're here
+  socket.emit('voice:join');
+  vdbg('Announced voice:join to room');
 
-  // Start speaking detector
+  // Start local volume analyser
   voiceStartAnalyser('local', voiceMicStream);
   voiceAnimLoop();
 }
 
-// ── Stop voice (called on leave/lobby) ──
+// ── Stop voice (called on lobby) ─────────────────────────────
 function voiceStop() {
   if (!voiceActive) return;
   voiceActive = false;
   socket?.emit('voice:leave');
   voiceMicStream?.getTracks().forEach(t => t.stop());
   voiceMicStream = null;
-  Object.values(voicePeers).forEach(pc => pc.close());
-  voicePeers  = {};
+  Object.keys(voicePeers).forEach(id => voiceClosePeer(id));
   voiceAnalysers = {};
   voiceSpeaking  = {};
-  cancelAnimationFrame(voiceAnimFrame);
-  voiceRenderAllBadges();
+  cancelAnimationFrame(voiceRafId);
+  voiceRafId = null;
+  vdbg('Voice stopped');
 }
 
-// ── Create a PeerConnection to another player ──
-function voiceCreatePeer(peerId, initiator) {
+// ── Create/get RTCPeerConnection ──────────────────────────────
+function voiceDial(peerId, initiator) {
   if (voicePeers[peerId]) return voicePeers[peerId];
+  vdbg((initiator ? 'Calling' : 'Answering') + ' ' + peerId.slice(0,6));
 
-  const pc = new RTCPeerConnection({ iceServers: voiceIceServers });
+  const pc = new RTCPeerConnection({ iceServers: voiceIce });
+  pc._remoteSet = false;
+  pc._iceBuf    = [];
   voicePeers[peerId] = pc;
 
-  // ICE candidate buffering fix
-  pc._iceBuf = [];
-  pc._remoteSet = false;
-
-  // Add local mic tracks
-  voiceMicStream?.getTracks().forEach(t => pc.addTrack(t, voiceMicStream));
+  // Add local mic
+  if (voiceMicStream) {
+    voiceMicStream.getTracks().forEach(t => pc.addTrack(t, voiceMicStream));
+  } else {
+    vdbg('WARNING: no mic stream when dialing ' + peerId.slice(0,6));
+  }
 
   // Send ICE candidates
   pc.onicecandidate = ({ candidate }) => {
     if (candidate) socket?.emit('voice:ice', { to: peerId, candidate });
   };
 
+  pc.oniceconnectionstatechange = () => {
+    vdbg('ICE ' + peerId.slice(0,6) + ': ' + pc.iceConnectionState);
+    if (pc.iceConnectionState === 'failed') pc.restartIce();
+  };
+
   // Receive remote audio
   pc.ontrack = ({ streams }) => {
+    vdbg('Got audio track from ' + peerId.slice(0,6) + ' ✅');
     const audio = new Audio();
     audio.srcObject = streams[0];
     audio.autoplay  = true;
-    audio.play().catch(() => {});
+    audio.play().catch(() => {
+      vdbg('Autoplay blocked — tap screen');
+      document.addEventListener('click', () => audio.play().catch(()=>{}), { once: true });
+    });
     voiceStartAnalyser(peerId, streams[0]);
-    console.log('[Voice] Track from', peerId);
   };
 
   pc.onconnectionstatechange = () => {
-    if (pc.connectionState === 'failed') {
-      console.warn('[Voice] Peer failed:', peerId);
-      pc.restartIce();
-    }
+    vdbg('Conn ' + peerId.slice(0,6) + ': ' + pc.connectionState);
   };
 
-  // Initiator sends offer
+  // Initiator creates offer
   if (initiator) {
-    pc.createOffer().then(o => {
-      pc.setLocalDescription(o);
-      socket?.emit('voice:offer', { to: peerId, offer: o });
-    });
+    pc.createOffer()
+      .then(o => { pc.setLocalDescription(o); socket?.emit('voice:offer', { to: peerId, offer: o }); vdbg('Sent offer to ' + peerId.slice(0,6)); })
+      .catch(e => vdbg('Offer create error: ' + e.message));
   }
 
   return pc;
 }
 
+function voiceClosePeer(id) {
+  voicePeers[id]?.close();
+  delete voicePeers[id];
+  delete voiceAnalysers[id];
+  delete voiceSpeaking[id];
+  voiceRenderAllBadges();
+}
+
 async function voiceFlushIce(pc) {
-  for (const c of pc._iceBuf) {
+  for (const c of (pc._iceBuf || [])) {
     try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch(e) {}
   }
   pc._iceBuf = [];
 }
 
-// ── Volume analyser — detects when someone is speaking ──
+// ── Volume analyser ───────────────────────────────────────────
 function voiceStartAnalyser(id, stream) {
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -1468,128 +1562,68 @@ function voiceStartAnalyser(id, stream) {
     const ana = ctx.createAnalyser();
     ana.fftSize = 512;
     src.connect(ana);
-    const buf = new Uint8Array(ana.frequencyBinCount);
-    voiceAnalysers[id] = { analyser: ana, buf };
-  } catch(e) {}
+    voiceAnalysers[id] = { analyser: ana, buf: new Uint8Array(ana.frequencyBinCount) };
+  } catch(e) { vdbg('Analyser error: ' + e.message); }
 }
 
 function voiceIsSpeaking(id) {
   const a = voiceAnalysers[id];
   if (!a) return false;
   a.analyser.getByteFrequencyData(a.buf);
-  const avg = a.buf.reduce((s, v) => s + v, 0) / a.buf.length;
-  return avg > 8; // threshold
+  return a.buf.reduce((s, v) => s + v, 0) / a.buf.length > 8;
 }
 
+let _lastSpeaking = false;
 function voiceAnimLoop() {
-  voiceAnimFrame = requestAnimationFrame(voiceAnimLoop);
-  const localSpeaking = !voiceMuted && voiceIsSpeaking('local');
-  const changed = {};
-
-  // Local
-  if (voiceSpeaking['local'] !== localSpeaking) {
-    voiceSpeaking['local'] = localSpeaking;
-    changed['local'] = true;
-    if (localSpeaking) socket?.emit('voice:speaking', { speaking: true });
-    else               socket?.emit('voice:speaking', { speaking: false });
+  voiceRafId = requestAnimationFrame(voiceAnimLoop);
+  const speaking = !voiceMuted && voiceIsSpeaking('local');
+  if (speaking !== _lastSpeaking) {
+    _lastSpeaking = speaking;
+    socket?.emit('voice:speaking', { speaking });
+    voiceSpeaking['local'] = speaking;
+    voiceRenderBadge('local');
   }
 }
 
-// ── Socket events for voice signaling ──
-function voiceBindSocket() {
-  // Someone joined — we initiate
-  socket.on('voice:joined', ({ id }) => {
-    if (id === MY_VOICE_ID() || !voiceActive) return;
-    console.log('[Voice] Peer joined, initiating:', id);
-    voiceCreatePeer(id, true);
-  });
-
-  // Someone left
-  socket.on('voice:left', ({ id }) => {
-    voicePeers[id]?.close();
-    delete voicePeers[id];
-    delete voiceAnalysers[id];
-    delete voiceSpeaking[id];
-    voiceRenderAllBadges();
-  });
-
-  // Offer from peer (we are callee)
-  socket.on('voice:offer', async ({ from, offer }) => {
-    if (!voiceActive) return;
-    const pc = voiceCreatePeer(from, false);
-    await pc.setRemoteDescription(new RTCSessionDescription(offer));
-    pc._remoteSet = true;
-    await voiceFlushIce(pc);
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    socket.emit('voice:answer', { to: from, answer });
-  });
-
-  // Answer from peer (we were caller)
-  socket.on('voice:answer', async ({ from, answer }) => {
-    const pc = voicePeers[from];
-    if (!pc) return;
-    await pc.setRemoteDescription(new RTCSessionDescription(answer));
-    pc._remoteSet = true;
-    await voiceFlushIce(pc);
-  });
-
-  // ICE candidate
-  socket.on('voice:ice', async ({ from, candidate }) => {
-    const pc = voicePeers[from];
-    if (!pc) return;
-    if (pc._remoteSet) {
-      try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch(e) {}
-    } else {
-      pc._iceBuf.push(candidate);
-    }
-  });
-
-  // Speaking indicator from peer
-  socket.on('voice:speaking', ({ id, speaking }) => {
-    voiceSpeaking[id] = speaking;
-    voiceRenderBadge(id);
-  });
-}
-
-// ── Mute toggle — called when tapping own avatar ──
+// ── Mute ─────────────────────────────────────────────────────
 function voiceToggleMute() {
-  if (!voiceActive || !voiceMicStream) return;
+  if (!voiceActive || !voiceMicStream) {
+    vdbg('Cannot mute: voice not active');
+    return;
+  }
   voiceMuted = !voiceMuted;
   voiceMicStream.getAudioTracks().forEach(t => { t.enabled = !voiceMuted; });
-  socket?.emit('voice:speaking', { speaking: false }); // tell others silent
+  socket?.emit('voice:speaking', { speaking: false });
   voiceSpeaking['local'] = false;
   voiceRenderAllBadges();
   toast(voiceMuted ? '🔇 Muted' : '🎤 Unmuted');
 }
 
-// ── Update the glowing ring on a specific player's avatar ──
+// ── Badge rendering ───────────────────────────────────────────
 function voiceRenderBadge(peerId) {
-  // pchip avatars
   document.querySelectorAll('.pchip').forEach(chip => {
     const wrap = chip.querySelector('.pchip-av-wrap');
     if (!wrap) return;
-    const pid = wrap.dataset.pid;
-    if (pid !== peerId && !(peerId === 'local' && chip.classList.contains('me'))) return;
-    const speaking = pid === MY_VOICE_ID()
-      ? (voiceActive && !voiceMuted && voiceSpeaking['local'])
-      : voiceSpeaking[pid];
-    wrap.classList.toggle('speaking', !!speaking);
+    const pid  = wrap.dataset.pid;
+    const isMe = chip.classList.contains('me');
+    if (!(pid === peerId || (peerId === 'local' && isMe))) return;
+    const speaking = isMe
+      ? (voiceActive && !voiceMuted && !!voiceSpeaking['local'])
+      : !!voiceSpeaking[pid];
+    wrap.classList.toggle('speaking', speaking);
     const badge = wrap.querySelector('.mic-badge');
-    if (badge && chip.classList.contains('me')) {
-      badge.textContent = voiceMuted ? '🔇' : (voiceActive ? '🎤' : '');
-    }
+    if (badge && isMe) badge.textContent = !voiceActive ? '' : voiceMuted ? '🔇' : '🎤';
   });
-  // w-player avatars (waiting room)
   document.querySelectorAll('.w-player').forEach(wp => {
     const wrap = wp.querySelector('.w-av-wrap');
     if (!wrap) return;
-    const pid = wrap.dataset.pid;
-    if (pid !== peerId && !(peerId === 'local' && wp.classList.contains('me'))) return;
-    const speaking = pid === MY_VOICE_ID()
-      ? (voiceActive && !voiceMuted && voiceSpeaking['local'])
-      : voiceSpeaking[pid];
-    wrap.classList.toggle('speaking', !!speaking);
+    const pid  = wrap.dataset.pid;
+    const isMe = wp.classList.contains('me');
+    if (!(pid === peerId || (peerId === 'local' && isMe))) return;
+    const speaking = isMe
+      ? (voiceActive && !voiceMuted && !!voiceSpeaking['local'])
+      : !!voiceSpeaking[pid];
+    wrap.classList.toggle('speaking', speaking);
   });
 }
 
