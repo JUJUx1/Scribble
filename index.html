@@ -1359,9 +1359,17 @@ let voiceRafId      = null;
 async function voiceLoadIce() {
   try {
     const r = await fetch(TURN_API);
-    voiceIce = await r.json();
-    vdbg('ICE loaded: ' + voiceIce.length + ' servers');
-  } catch(e) { vdbg('ICE fetch failed, using STUN only'); }
+    const data = await r.json();
+    // Metered returns array of ice server objects
+    if (Array.isArray(data) && data.length > 0) {
+      voiceIce = data;
+      vdbg('ICE loaded: ' + voiceIce.length + ' servers ✅');
+    } else {
+      vdbg('ICE bad response: ' + JSON.stringify(data).slice(0,80));
+    }
+  } catch(e) {
+    vdbg('ICE fetch failed: ' + e.message);
+  }
 }
 
 // ── Debug helper — shows in chat as sys message ───────────────
@@ -1385,10 +1393,16 @@ function voiceEnsureBound() {
 
   vSocket.on('connect', () => {
     vdbg('Voice server connected ✅ id:' + vSocket.id.slice(0,6));
-    // Join a voice room matching the game room
     if (myRoomId) {
       vSocket.emit('voice:room', { roomId: myRoomId });
       vdbg('Joined voice room: ' + myRoomId);
+    }
+    // If voice is already active (reconnect case), re-announce
+    if (voiceActive) {
+      setTimeout(() => {
+        vSocket.emit('voice:join');
+        vdbg('Re-announced after reconnect');
+      }, 500);
     }
   });
 
@@ -1479,9 +1493,13 @@ async function voiceStart() {
   voiceActive = true;
   voiceMuted  = false;
 
-  // Tell everyone in the room we're here
-  vSocket.emit('voice:room', { roomId: myRoomId }); vSocket.emit('voice:join');
-  vdbg('Announced voice:join to room');
+  // Small delay so both peers have time to connect their vSocket first
+  setTimeout(() => {
+    if (!voiceActive) return;
+    vSocket.emit('voice:room', { roomId: myRoomId });
+    vSocket.emit('voice:join');
+    vdbg('Announced voice:join to room');
+  }, 1500);
 
   // Start local volume analyser
   voiceStartAnalyser('local', voiceMicStream);
