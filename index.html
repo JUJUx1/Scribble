@@ -1003,7 +1003,6 @@ function connect(cb) {
 
   socket.on('connect', () => {
     myId = socket.id;
-    voiceEnsureBound(); // bind voice events on connect
     cb();
   });
   socket.on('connect_error', () => showErr('Cannot connect to server'));
@@ -1371,29 +1370,49 @@ function vdbg(msg) {
   addMsg('', '🎙️ ' + msg, 'sys');
 }
 
-// ── Bind socket voice events ONCE ────────────────────────────
+// ── Separate voice signaling socket (call-app server) ────────
+// Reuses the existing call-app Render server — no Scribble
+// server changes needed at all.
+const VOICE_SERVER = 'https://call-app-xgbl.onrender.com';
+let vSocket = null; // separate socket just for voice signaling
+
 function voiceEnsureBound() {
-  if (voiceSocketBound || !socket) return;
+  if (voiceSocketBound) return;
   voiceSocketBound = true;
-  vdbg('Socket events bound');
+  vdbg('Connecting voice signaling server...');
+
+  vSocket = io(VOICE_SERVER, { transports: ['websocket', 'polling'] });
+
+  vSocket.on('connect', () => {
+    vdbg('Voice server connected ✅ id:' + vSocket.id.slice(0,6));
+    // Join a voice room matching the game room
+    if (myRoomId) {
+      vSocket.emit('voice:room', { roomId: myRoomId });
+      vdbg('Joined voice room: ' + myRoomId);
+    }
+  });
+
+  vSocket.on('connect_error', (e) => {
+    vdbg('Voice server error: ' + e.message);
+  });
 
   // Someone new joined voice in our room — we call them
-  socket.on('voice:joined', ({ id }) => {
+  vSocket.on('voice:joined', ({ id }) => {
     vdbg('Peer joined voice: ' + id.slice(0,6));
-    if (!voiceActive || id === socket.id) return;
+    if (!voiceActive || id === vSocket.id) return;
     voiceDial(id, true);
   });
 
   // Someone left
-  socket.on('voice:left', ({ id }) => {
-    vdbg('Peer left voice: ' + id.slice(0,6));
+  vSocket.on('voice:left', ({ id }) => {
+    vdbg('Peer left: ' + id.slice(0,6));
     voiceClosePeer(id);
   });
 
   // Incoming offer (we are callee)
-  socket.on('voice:offer', async ({ from, offer }) => {
+  vSocket.on('voice:offer', async ({ from, offer }) => {
     vdbg('Got offer from ' + from.slice(0,6));
-    if (!voiceActive) { vdbg('Not active, ignoring offer'); return; }
+    if (!voiceActive) return;
     const pc = voiceDial(from, false);
     try {
       await pc.setRemoteDescription(new RTCSessionDescription(offer));
@@ -1401,16 +1420,16 @@ function voiceEnsureBound() {
       await voiceFlushIce(pc);
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
-      socket.emit('voice:answer', { to: from, answer });
+      vSocket.emit('voice:answer', { to: from, answer });
       vdbg('Sent answer to ' + from.slice(0,6));
     } catch(e) { vdbg('Offer error: ' + e.message); }
   });
 
   // Incoming answer (we were caller)
-  socket.on('voice:answer', async ({ from, answer }) => {
+  vSocket.on('voice:answer', async ({ from, answer }) => {
     vdbg('Got answer from ' + from.slice(0,6));
     const pc = voicePeers[from];
-    if (!pc) { vdbg('No pc for answer'); return; }
+    if (!pc) return;
     try {
       await pc.setRemoteDescription(new RTCSessionDescription(answer));
       pc._remoteSet = true;
@@ -1419,20 +1438,19 @@ function voiceEnsureBound() {
   });
 
   // ICE candidate
-  socket.on('voice:ice', async ({ from, candidate }) => {
+  vSocket.on('voice:ice', async ({ from, candidate }) => {
     const pc = voicePeers[from];
     if (!pc || !candidate) return;
     if (pc._remoteSet) {
-      try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); }
-      catch(e) { /* ignore stale */ }
+      try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch(e) {}
     } else {
       pc._iceBuf = pc._iceBuf || [];
       pc._iceBuf.push(candidate);
     }
   });
 
-  // Speaking indicator
-  socket.on('voice:speaking', ({ id, speaking }) => {
+  // Speaking indicator from peer
+  vSocket.on('voice:speaking', ({ id, speaking }) => {
     voiceSpeaking[id] = speaking;
     voiceRenderBadge(id);
   });
@@ -1462,7 +1480,7 @@ async function voiceStart() {
   voiceMuted  = false;
 
   // Tell everyone in the room we're here
-  socket.emit('voice:join');
+  vSocket.emit('voice:room', { roomId: myRoomId }); vSocket.emit('voice:join');
   vdbg('Announced voice:join to room');
 
   // Start local volume analyser
@@ -1474,7 +1492,7 @@ async function voiceStart() {
 function voiceStop() {
   if (!voiceActive) return;
   voiceActive = false;
-  socket?.emit('voice:leave');
+  vSocket?.emit('voice:leave');
   voiceMicStream?.getTracks().forEach(t => t.stop());
   voiceMicStream = null;
   Object.keys(voicePeers).forEach(id => voiceClosePeer(id));
@@ -1504,7 +1522,7 @@ function voiceDial(peerId, initiator) {
 
   // Send ICE candidates
   pc.onicecandidate = ({ candidate }) => {
-    if (candidate) socket?.emit('voice:ice', { to: peerId, candidate });
+    if (candidate) vSocket?.emit('voice:ice', { to: peerId, candidate });
   };
 
   pc.oniceconnectionstatechange = () => {
@@ -1532,7 +1550,7 @@ function voiceDial(peerId, initiator) {
   // Initiator creates offer
   if (initiator) {
     pc.createOffer()
-      .then(o => { pc.setLocalDescription(o); socket?.emit('voice:offer', { to: peerId, offer: o }); vdbg('Sent offer to ' + peerId.slice(0,6)); })
+      .then(o => { pc.setLocalDescription(o); vSocket?.emit('voice:offer', { to: peerId, offer: o }); vdbg('Sent offer to ' + peerId.slice(0,6)); })
       .catch(e => vdbg('Offer create error: ' + e.message));
   }
 
@@ -1579,7 +1597,7 @@ function voiceAnimLoop() {
   const speaking = !voiceMuted && voiceIsSpeaking('local');
   if (speaking !== _lastSpeaking) {
     _lastSpeaking = speaking;
-    socket?.emit('voice:speaking', { speaking });
+    vSocket?.emit('voice:speaking', { speaking });
     voiceSpeaking['local'] = speaking;
     voiceRenderBadge('local');
   }
@@ -1593,7 +1611,7 @@ function voiceToggleMute() {
   }
   voiceMuted = !voiceMuted;
   voiceMicStream.getAudioTracks().forEach(t => { t.enabled = !voiceMuted; });
-  socket?.emit('voice:speaking', { speaking: false });
+  vSocket?.emit('voice:speaking', { speaking: false });
   voiceSpeaking['local'] = false;
   voiceRenderAllBadges();
   toast(voiceMuted ? '🔇 Muted' : '🎤 Unmuted');
